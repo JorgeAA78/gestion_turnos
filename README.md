@@ -37,7 +37,16 @@ cp .env.local.example .env.local
 SUPABASE_URL=tu_supabase_url_aqui
 SUPABASE_KEY=tu_supabase_anon_key_aqui
 OPENAI_API_KEY=tu_openai_api_key_aqui
+GMAIL_USER=tu_email@gmail.com
+GMAIL_APP_PASSWORD=tu_contraseña_de_aplicacion
 ```
+
+#### Obtener contraseña de aplicación de Gmail:
+
+1. Habilita la [verificación en 2 pasos](https://myaccount.google.com/signinoptions/two-step-verification) en tu cuenta de Gmail
+2. Ve a [Contraseñas de aplicaciones](https://myaccount.google.com/apppasswords)
+3. Crea una nueva contraseña con nombre "Mi Turno"
+4. Copia la contraseña de 16 caracteres → `GMAIL_APP_PASSWORD`
 
 #### Obtener credenciales de Supabase:
 
@@ -91,6 +100,7 @@ clase-4-mi-turno/
 ├── src/
 │   ├── lib/
 │   │   ├── db.ts              # Cliente de Supabase
+│   │   ├── email.ts           # Envío de emails con Nodemailer/Gmail
 │   │   ├── turnos.ts          # Funciones para gestionar turnos
 │   │   ├── tools.ts           # Definición de tools para el agente
 │   │   └── validaciones.ts    # Funciones de validación (fechas, horas, etc.)
@@ -121,9 +131,13 @@ El endpoint `/api/chat` recibe los mensajes y los procesa usando Vercel AI SDK c
 El agente tiene acceso a 4 tools:
 
 - **verificarDisponibilidad**: Chequea si hay turnos disponibles en una fecha/hora
-- **reservarTurno**: Reserva un nuevo turno con los datos del cliente
+- **reservarTurno**: Reserva un nuevo turno con los datos del cliente y envía email de confirmación
 - **listarTurnos**: Lista los turnos de un día o rango de fechas
-- **cancelarTurno**: Cancela un turno existente
+- **cancelarTurno**: Cancela un turno existente (busca automáticamente por nombre/fecha)
+
+### 6. Email de Confirmación (`src/lib/email.ts`)
+
+Cuando se reserva un turno exitosamente, se envía automáticamente un email de confirmación al cliente usando Nodemailer con Gmail SMTP. El email incluye fecha, hora e ID del turno.
 
 ### 4. Base de Datos (`src/lib/turnos.ts`)
 
@@ -191,8 +205,8 @@ Asistente: [Reserva el turno y confirma]
 Usuario: "¿Qué turnos hay hoy?"
 Asistente: [Lista los turnos del día]
 
-Usuario: "Quiero cancelar mi turno"
-Asistente: [Pide el ID del turno y lo cancela]
+Usuario: "Quiero cancelar mi turno del viernes"
+Asistente: [Busca el turno por fecha, lo encuentra y lo cancela automáticamente]
 ```
 
 ## 🔧 Tecnologías Utilizadas
@@ -201,12 +215,13 @@ Asistente: [Pide el ID del turno y lo cancela]
 - **Vercel AI SDK**: SDK para construir agentes con LLMs
 - **OpenAI GPT-4.1-mini**: Modelo de lenguaje
 - **Supabase**: Base de datos PostgreSQL como servicio
+- **Nodemailer**: Envío de emails de confirmación vía Gmail SMTP
 - **Zod**: Validación de schemas para las tools
 - **TypeScript**: Tipado estático
 
 ## 📝 Notas Importantes
 
-- **stopWhen: stepCountIs(9)**: Limita el número de pasos del agente para asegurar que ejecute las tools y no se quede en un loop infinito.
+- **maxSteps: 9**: Limita el número de pasos del agente para asegurar que ejecute las tools y no se quede en un loop infinito.
 
 - **Modelo**: Se usa `gpt-4.1-mini` que es rápido y económico para este tipo de aplicaciones.
 
@@ -216,7 +231,7 @@ Asistente: [Pide el ID del turno y lo cancela]
 
 ### Error: "SUPABASE_URL no está configurada"
 
-Asegúrate de tener el archivo `.env.local` con todas las variables de entorno necesarias.
+Asegúrate de tener el archivo `.env` con todas las variables de entorno necesarias.
 
 ### Error: "relation 'turnos' does not exist"
 
@@ -226,7 +241,7 @@ Ejecuta el script SQL en Supabase para crear la tabla (ver Paso 3).
 
 Verifica que:
 1. El modelo esté correctamente configurado (`gpt-4.1-mini`)
-2. El `stopWhen: stepCountIs(9)` esté configurado
+2. El `maxSteps: 9` esté configurado
 3. Las tools estén correctamente definidas con sus schemas zod
 
 ## 📚 Recursos Adicionales
