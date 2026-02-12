@@ -23,8 +23,8 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
-      content:
-        "¡Hola! Soy tu asistente de turnos. Puedo ayudarte a verificar disponibilidad, reservar turnos, listar turnos y cancelar reservas. ¿En qué puedo ayudarte?",
+      content: `¡Hola! Soy un demo de asistente de turnos (general, no específico de un rubro). Puedo ayudarte a verificar disponibilidad, reservar turnos, listar tus turnos y cancelar reservas.
+¿En qué puedo ayudarte?`,
     },
   ]);
   const [input, setInput] = useState("");
@@ -106,9 +106,8 @@ export default function Home() {
           {messages.map((message, index) => (
             <div
               key={index}
-              className={`${styles.message} ${
-                message.role === "user" ? styles.userMessage : styles.assistantMessage
-              }`}
+              className={`${styles.message} ${message.role === "user" ? styles.userMessage : styles.assistantMessage
+                }`}
             >
               <div className={styles.messageContent}>{message.content}</div>
             </div>
