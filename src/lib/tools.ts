@@ -14,6 +14,7 @@ import {
   crearTurno,
   listarTurnos,
   cancelarTurno,
+  reagendarTurno,
 } from "./turnos";
 import {
   validarFormatoFecha,
@@ -21,16 +22,16 @@ import {
   validarFechaFutura,
   validarHorarioLaboral,
   validarFechaHoraFutura,
+  validarDiaLaboral,
 } from "./validaciones";
-import { enviarEmailConfirmacion } from "./email";
+import { enviarEmailConfirmacion, enviarEmailCancelacion, enviarEmailReagendamiento } from "./email";
 
 /**
  * Tool para verificar disponibilidad en una fecha y hora específica
- * El agente usa esta tool cuando el usuario pregunta sobre disponibilidad
  */
 export const toolVerificarDisponibilidad = {
   description:
-    "Verifica si hay disponibilidad para reservar un turno en una fecha y hora específica. Usa esta tool cuando el usuario pregunte si hay turnos disponibles o si puede reservar en un momento específico.",
+    "Verifica si hay disponibilidad para reservar un turno en una fecha y hora específica en Cal.com. Usa esta tool cuando el usuario pregunte si hay turnos disponibles.",
   parameters: z.object({
     fecha: z
       .string()
@@ -40,61 +41,52 @@ export const toolVerificarDisponibilidad = {
       .describe("Hora en formato HH:MM en formato 24 horas (ejemplo: 14:30)"),
   }),
   execute: async (args: { fecha: string; hora: string }) => {
-    // Logging educativo: mostramos qué tool se está ejecutando
     console.log("🔍 [TOOL] verificarDisponibilidad ejecutándose...");
-    console.log(`   📅 Fecha: ${args.fecha}`);
-    console.log(`   🕐 Hora: ${args.hora}`);
 
-    // Validaciones básicas
     if (!validarFormatoFecha(args.fecha)) {
-      return {
-        disponible: false,
-        mensaje: `La fecha "${args.fecha}" no tiene un formato válido. Por favor usa el formato YYYY-MM-DD (ejemplo: 2024-12-25).`,
-      };
+      return { disponible: false, mensaje: `La fecha "${args.fecha}" no tiene un formato válido (YYYY-MM-DD).` };
     }
 
     if (!validarFormatoHora(args.hora)) {
-      return {
-        disponible: false,
-        mensaje: `La hora "${args.hora}" no tiene un formato válido. Por favor usa el formato HH:MM en 24 horas (ejemplo: 14:30).`,
-      };
+      return { disponible: false, mensaje: `La hora "${args.hora}" no tiene un formato válido (HH:MM).` };
     }
 
     if (!validarFechaFutura(args.fecha)) {
-      return {
-        disponible: false,
-        mensaje: `La fecha ${args.fecha} está en el pasado. Por favor elige una fecha de hoy en adelante.`,
-      };
+      return { disponible: false, mensaje: `La fecha ${args.fecha} está en el pasado.` };
     }
 
-    // Verificamos disponibilidad en la base de datos
-    const disponible = await verificarDisponibilidad(args.fecha, args.hora);
+    const validacionDia = validarDiaLaboral(args.fecha);
+    if (!validacionDia.valido) {
+      return { disponible: false, mensaje: validacionDia.motivo };
+    }
 
-    console.log(`   ✅ Resultado: ${disponible ? "Disponible" : "No disponible"}`);
+    if (!validarHorarioLaboral(args.hora)) {
+      return { disponible: false, mensaje: `La hora ${args.hora} está fuera del horario de atención (09:00 a 18:00).` };
+    }
 
-    return {
-      disponible,
-      mensaje: disponible
-        ? `Sí, hay disponibilidad el ${args.fecha} a las ${args.hora}`
-        : `No, no hay disponibilidad el ${args.fecha} a las ${args.hora}. Ya hay un turno reservado.`,
-    };
+    try {
+      const disponible = await verificarDisponibilidad(args.fecha, args.hora);
+      return {
+        disponible,
+        mensaje: disponible
+          ? `Sí, hay disponibilidad el ${args.fecha} a las ${args.hora} en Cal.com`
+          : `No, no hay disponibilidad el ${args.fecha} a las ${args.hora} en Cal.com. Ya hay un turno reservado o bloqueado.`,
+      };
+    } catch (error) {
+      return { disponible: false, mensaje: `Error de Cal.com: ${error instanceof Error ? error.message : "Desconocido"}` };
+    }
   },
 };
 
 /**
  * Tool para reservar un nuevo turno
- * El agente usa esta tool cuando el usuario quiere agendar un turno
  */
 export const toolReservarTurno = {
   description:
-    "Reserva un nuevo turno con los datos del cliente. Usa esta tool cuando el usuario quiera agendar o reservar un turno. Siempre verifica disponibilidad primero antes de reservar.",
+    "Reserva un nuevo turno con los datos del cliente en Cal.com. Devuelve un ID numérico de 4 dígitos. Siempre verifica disponibilidad primero antes de reservar.",
   parameters: z.object({
-    fecha: z
-      .string()
-      .describe("Fecha en formato YYYY-MM-DD (ejemplo: 2024-12-25)"),
-    hora: z
-      .string()
-      .describe("Hora en formato HH:MM en formato 24 horas (ejemplo: 14:30)"),
+    fecha: z.string().describe("Fecha en formato YYYY-MM-DD"),
+    hora: z.string().describe("Hora en formato HH:MM"),
     nombre_cliente: z.string().describe("Nombre completo del cliente"),
     email: z.string().email().describe("Email del cliente"),
   }),
@@ -104,215 +96,168 @@ export const toolReservarTurno = {
     nombre_cliente: string;
     email: string;
   }) => {
-    // Logging educativo: mostramos qué tool se está ejecutando
     console.log("📝 [TOOL] reservarTurno ejecutándose...");
-    console.log(`   👤 Cliente: ${args.nombre_cliente}`);
-    console.log(`   📧 Email: ${args.email}`);
-    console.log(`   📅 Fecha: ${args.fecha}`);
-    console.log(`   🕐 Hora: ${args.hora}`);
 
-    // Validaciones básicas antes de proceder
-    if (!validarFormatoFecha(args.fecha)) {
-      return {
-        exito: false,
-        mensaje: `La fecha "${args.fecha}" no tiene un formato válido. Por favor usa el formato YYYY-MM-DD (ejemplo: 2024-12-25).`,
-      };
-    }
+    if (!validarFormatoFecha(args.fecha)) return { exito: false, mensaje: "Formato de fecha inválido." };
+    if (!validarFormatoHora(args.hora)) return { exito: false, mensaje: "Formato de hora inválido." };
+    if (!validarFechaHoraFutura(args.fecha, args.hora)) return { exito: false, mensaje: "La fecha y hora ya pasaron." };
 
-    if (!validarFormatoHora(args.hora)) {
-      return {
-        exito: false,
-        mensaje: `La hora "${args.hora}" no tiene un formato válido. Por favor usa el formato HH:MM en 24 horas (ejemplo: 14:30).`,
-      };
-    }
+    const validacionDia = validarDiaLaboral(args.fecha);
+    if (!validacionDia.valido) return { exito: false, mensaje: validacionDia.motivo };
 
-    if (!validarFechaFutura(args.fecha)) {
-      return {
-        exito: false,
-        mensaje: `No se puede reservar un turno en el pasado. La fecha ${args.fecha} ya pasó. Por favor elige una fecha de hoy en adelante.`,
-      };
-    }
-
-    if (!validarFechaHoraFutura(args.fecha, args.hora)) {
-      return {
-        exito: false,
-        mensaje: `No se puede reservar un turno en el pasado. La fecha y hora ${args.fecha} ${args.hora} ya pasó.`,
-      };
-    }
-
-    // Validamos horario laboral (opcional, pero educativo)
     if (!validarHorarioLaboral(args.hora)) {
-      console.log(`   ⚠️  Advertencia: La hora ${args.hora} está fuera del horario laboral (09:00-18:00)`);
-      // No bloqueamos, solo informamos
+      return { exito: false, mensaje: "Fuera de horario laboral (09:00-18:00)." };
     }
 
-    // Primero verificamos disponibilidad
-    const disponible = await verificarDisponibilidad(args.fecha, args.hora);
-
-    if (!disponible) {
-      console.log(`   ❌ No disponible - turno ya reservado`);
-      return {
-        exito: false,
-        mensaje: `Lo siento, no hay disponibilidad el ${args.fecha} a las ${args.hora}. Por favor elige otra fecha u hora.`,
-      };
-    }
-
-    // Si hay disponibilidad, creamos el turno
     try {
+      const disponible = await verificarDisponibilidad(args.fecha, args.hora);
+      if (!disponible) {
+        return { exito: false, mensaje: `No hay disponibilidad el ${args.fecha} a las ${args.hora}.` };
+      }
+
       const turno = await crearTurno({
         fecha: args.fecha,
         hora: args.hora,
         nombre_cliente: args.nombre_cliente,
         email: args.email,
-        estado: "confirmado",
       });
 
-      console.log(`   ✅ Turno creado exitosamente con ID: ${turno.id}`);
-
-      // Enviamos email de confirmación (no bloqueante)
-      const emailEnviado = await enviarEmailConfirmacion({
+      // Enviamos email (no bloqueante) local si se desea doble email
+      enviarEmailConfirmacion({
         email: args.email,
         nombre: args.nombre_cliente,
         fecha: args.fecha,
         hora: args.hora,
         turnoId: turno.id,
-      });
-
-      const mensajeEmail = emailEnviado
-        ? " Se envió un email de confirmación a tu correo."
-        : "";
+      }).catch(console.error);
 
       return {
         exito: true,
-        mensaje: `¡Turno reservado con éxito! Tu turno está confirmado para el ${args.fecha} a las ${args.hora}. Tu ID de turno es: ${turno.id}.${mensajeEmail}`,
-        turno: {
-          id: turno.id,
-          fecha: turno.fecha,
-          hora: turno.hora,
-        },
+        mensaje: `¡Turno reservado con éxito para el ${args.fecha} a las ${args.hora}! Tu ID de turno es: ${turno.id}. Este ID numérico de 4 dígitos es necesario para cancelar o reagendar.`,
+        turno: { id: turno.id, fecha: turno.fecha, hora: turno.hora },
       };
     } catch (error) {
-      console.error(`   ❌ Error al crear turno:`, error);
-      return {
-        exito: false,
-        mensaje: `Hubo un error al reservar el turno: ${error instanceof Error ? error.message : "Error desconocido"}`,
-      };
+      return { exito: false, mensaje: `Error al reservar: ${error instanceof Error ? error.message : "Desconocido"}` };
     }
   },
 };
 
 /**
  * Tool para listar turnos existentes
- * El agente usa esta tool cuando el usuario pregunta por turnos del día o de un rango de fechas
  */
 export const toolListarTurnos = {
-  description:
-    "Lista los turnos reservados para una fecha específica o un rango de fechas. Usa esta tool cuando el usuario pregunte qué turnos hay, qué turnos hay hoy, o qué turnos hay en una fecha específica.",
+  description: "Lista los turnos reservados en el sistema para una fecha específica o un rango.",
   parameters: z.object({
-    fechaDesde: z
-      .string()
-      .optional()
-      .describe(
-        "Fecha de inicio en formato YYYY-MM-DD. Si no se proporciona, se usa la fecha de hoy."
-      ),
-    fechaHasta: z
-      .string()
-      .optional()
-      .describe(
-        "Fecha de fin en formato YYYY-MM-DD. Si no se proporciona, se usa la misma fecha de inicio."
-      ),
+    fechaDesde: z.string().optional().describe("Fecha de inicio YYYY-MM-DD"),
+    fechaHasta: z.string().optional().describe("Fecha de fin YYYY-MM-DD"),
   }),
   execute: async (args: { fechaDesde?: string; fechaHasta?: string }) => {
-    // Logging educativo: mostramos qué tool se está ejecutando
     console.log("📋 [TOOL] listarTurnos ejecutándose...");
-
-    // Si no se proporciona fechaDesde, usamos hoy
-    const fechaDesde =
-      args.fechaDesde || new Date().toISOString().split("T")[0];
+    const fechaDesde = args.fechaDesde || new Date().toISOString().split("T")[0];
     const fechaHasta = args.fechaHasta || fechaDesde;
 
-    console.log(`   📅 Buscando turnos desde ${fechaDesde} hasta ${fechaHasta}`);
+    try {
+      const turnos = await listarTurnos(fechaDesde, fechaHasta, true);
 
-    // Validaciones opcionales
-    if (args.fechaDesde && !validarFormatoFecha(args.fechaDesde)) {
+      if (turnos.length === 0) {
+        return { cantidad: 0, mensaje: `No hay turnos entre el ${fechaDesde} y el ${fechaHasta}.`, turnos: [] };
+      }
+
       return {
-        cantidad: 0,
-        mensaje: `La fecha "${args.fechaDesde}" no tiene un formato válido. Por favor usa el formato YYYY-MM-DD.`,
-        turnos: [],
+        cantidad: turnos.length,
+        mensaje: `Hay ${turnos.length} turno(s) reservado(s):`,
+        turnos: turnos.map((t) => ({ id: t.id, fecha: t.fecha, hora: t.hora, cliente: t.nombre_cliente })),
       };
+    } catch (error) {
+      return { cantidad: 0, mensaje: `Error al listar: ${error instanceof Error ? error.message : "Desconocido"}` };
     }
-
-    if (args.fechaHasta && !validarFormatoFecha(args.fechaHasta)) {
-      return {
-        cantidad: 0,
-        mensaje: `La fecha "${args.fechaHasta}" no tiene un formato válido. Por favor usa el formato YYYY-MM-DD.`,
-        turnos: [],
-      };
-    }
-
-    const turnos = await listarTurnos(fechaDesde, fechaHasta, true);
-
-    console.log(`   ✅ Encontrados ${turnos.length} turno(s)`);
-
-    if (turnos.length === 0) {
-      return {
-        cantidad: 0,
-        mensaje: `No hay turnos reservados entre el ${fechaDesde} y el ${fechaHasta}.`,
-        turnos: [],
-      };
-    }
-
-    return {
-      cantidad: turnos.length,
-      mensaje: `Hay ${turnos.length} turno(s) reservado(s) entre el ${fechaDesde} y el ${fechaHasta}:`,
-      turnos: turnos.map((t) => ({
-        id: t.id,
-        fecha: t.fecha,
-        hora: t.hora,
-        nombre_cliente: t.nombre_cliente,
-        email: t.email,
-      })),
-    };
   },
 };
 
 /**
  * Tool para cancelar un turno existente
- * El agente usa esta tool cuando el usuario quiere cancelar su turno
  */
 export const toolCancelarTurno = {
-  description:
-    "Cancela un turno existente usando su ID. Usa esta tool cuando el usuario quiera cancelar su turno. Necesitas el ID del turno para cancelarlo.",
+  description: "Cancela un turno existente usando su ID numérico de 4 dígitos.",
   parameters: z.object({
-    turnoId: z.string().describe("ID del turno a cancelar"),
+    turnoId: z.string().describe("ID numérico de 4 dígitos del turno a cancelar"),
   }),
   execute: async (args: { turnoId: string }) => {
-    // Logging educativo: mostramos qué tool se está ejecutando
     console.log("❌ [TOOL] cancelarTurno ejecutándose...");
-    console.log(`   🆔 ID del turno: ${args.turnoId}`);
-
     try {
       const turno = await cancelarTurno(args.turnoId);
-      console.log(`   ✅ Turno cancelado exitosamente`);
-      return {
-        exito: true,
-        mensaje: `Turno cancelado exitosamente. El turno del ${turno.fecha} a las ${turno.hora} ha sido cancelado.`,
-      };
+
+      // Enviamos email (no bloqueante) local
+      enviarEmailCancelacion({
+        email: turno.email,
+        nombre: turno.nombre_cliente,
+        fecha: turno.fecha,
+        hora: turno.hora,
+        turnoId: turno.id,
+      }).catch(console.error);
+
+      return { exito: true, mensaje: `Turno ${args.turnoId} cancelado exitosamente.` };
     } catch (error) {
-      console.error(`   ❌ Error al cancelar turno:`, error);
-      return {
-        exito: false,
-        mensaje: `No se pudo cancelar el turno: ${error instanceof Error ? error.message : "Error desconocido"
-          }. Verifica que el ID del turno sea correcto.`,
-      };
+      return { exito: false, mensaje: `No se pudo cancelar el turno. Verifica que el ID de 4 dígitos sea correcto. Detalle: ${error instanceof Error ? error.message : "Error"}` };
     }
   },
 };
 
-// Exportamos todas las tools en un array para usar con Vercel AI SDK
+/**
+ * Tool para reagendar un turno
+ */
+export const toolReagendarTurno = {
+  description: "Cancela un turno actual usando su ID numérico de 4 dígitos y lo reserva en una nueva fecha y hora. Verifica disponibilidad antes de reagendar.",
+  parameters: z.object({
+    turnoId: z.string().describe("ID numérico de 4 dígitos del turno a reagendar"),
+    nuevaFecha: z.string().describe("Nueva fecha en formato YYYY-MM-DD"),
+    nuevaHora: z.string().describe("Nueva hora en formato HH:MM"),
+  }),
+  execute: async (args: { turnoId: string; nuevaFecha: string; nuevaHora: string }) => {
+    console.log("🔄 [TOOL] reagendarTurno ejecutándose...");
+
+    if (!validarFormatoFecha(args.nuevaFecha) || !validarFormatoHora(args.nuevaHora)) {
+      return { exito: false, mensaje: "Formato de fecha u hora inválido." };
+    }
+
+    if (!validarFechaHoraFutura(args.nuevaFecha, args.nuevaHora)) {
+      return { exito: false, mensaje: "La nueva fecha y hora ya pasaron." };
+    }
+
+    const validacionDia = validarDiaLaboral(args.nuevaFecha);
+    if (!validacionDia.valido) return { exito: false, mensaje: validacionDia.motivo };
+
+    if (!validarHorarioLaboral(args.nuevaHora)) {
+      return { exito: false, mensaje: "Fuera de horario laboral (09:00-18:00)." };
+    }
+
+    try {
+      const nuevoTurno = await reagendarTurno(args.turnoId, args.nuevaFecha, args.nuevaHora);
+
+      // Enviamos email (no bloqueante) local
+      enviarEmailReagendamiento({
+        email: nuevoTurno.email,
+        nombre: nuevoTurno.nombre_cliente,
+        nuevaFecha: nuevoTurno.fecha,
+        nuevaHora: nuevoTurno.hora,
+        nuevoTurnoId: nuevoTurno.id,
+      }).catch(console.error);
+
+      return {
+        exito: true,
+        mensaje: `Turno reagendado con éxito. Tu nuevo turno es el ${nuevoTurno.fecha} a las ${nuevoTurno.hora}. Tu NUEVO ID de confirmación es: ${nuevoTurno.id}.`,
+      };
+    } catch (error) {
+      return { exito: false, mensaje: `Error al reagendar: ${error instanceof Error ? error.message : "Desconocido"}` };
+    }
+  }
+};
+
+// Exportamos todas las tools
 export const tools = {
   verificarDisponibilidad: toolVerificarDisponibilidad,
   reservarTurno: toolReservarTurno,
   listarTurnos: toolListarTurnos,
   cancelarTurno: toolCancelarTurno,
+  reagendarTurno: toolReagendarTurno,
 };
